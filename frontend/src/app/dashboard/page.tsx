@@ -1,0 +1,274 @@
+﻿'use client';
+
+import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
+import Link from 'next/link';
+import api from '@/lib/api';
+import NotificationBell from '@/components/NotificationBell';
+
+interface User {
+  id: string;
+  email: string;
+  role: string;
+  first_name?: string;
+  last_name?: string;
+}
+
+interface Profile {
+  headline?: string;
+  summary?: string;
+  location_city?: string;
+  location_country?: string;
+  years_experience?: number;
+  is_verified?: boolean;
+}
+
+export default function DashboardPage() {
+  const router = useRouter();
+  const [user, setUser] = useState<User | null>(null);
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const token = api.getToken();
+    if (!token) {
+      router.push('/login');
+      return;
+    }
+
+    const loadData = async () => {
+      try {
+        const userData = await api.getMe();
+        setUser(userData);
+
+        if (userData.role === 'candidate') {
+          try {
+            const profileData = await api.getProfile();
+            setProfile(profileData);
+          } catch (err) {
+            // Profile may not exist yet
+          }
+        }
+      } catch (error) {
+        console.error('Error loading dashboard:', error);
+        router.push('/login');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadData();
+  }, [router]);
+
+  const handleLogout = () => {
+    api.logout();
+    router.push('/login');
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-50">
+      {/* Header */}
+      <header className="bg-white shadow-sm">
+        <div className="max-w-7xl mx-auto px-4 py-4 flex justify-between items-center">
+          <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
+          <div className="flex items-center gap-4">
+            <span className="text-gray-600">
+              Welcome, {user?.first_name || user?.email}
+            </span>
+            <NotificationBell />
+            <span className="px-2 py-1 text-xs font-medium rounded bg-blue-100 text-blue-800">
+              {user?.role}
+            </span>
+            <button
+              onClick={handleLogout}
+              className="text-gray-600 hover:text-gray-900"
+            >
+              Logout
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-7xl mx-auto px-4 py-8">
+        {/* Quick Actions */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+          {user?.role === 'candidate' && (
+            <>
+              <Link
+                href="/jobs"
+                className="bg-blue-600 text-white p-6 rounded-lg shadow hover:bg-blue-700 transition"
+              >
+                <h3 className="text-lg font-semibold mb-2">Browse Jobs</h3>
+                <p className="text-blue-100">Find your next opportunity</p>
+              </Link>
+              <Link
+                href="/applications"
+                className="bg-green-600 text-white p-6 rounded-lg shadow hover:bg-green-700 transition"
+              >
+                <h3 className="text-lg font-semibold mb-2">My Applications</h3>
+                <p className="text-green-100">Track your job applications</p>
+              </Link>
+              <Link
+                href="/profile"
+                className="bg-purple-600 text-white p-6 rounded-lg shadow hover:bg-purple-700 transition"
+              >
+                <h3 className="text-lg font-semibold mb-2">My Profile</h3>
+                <p className="text-purple-100">Update your profile</p>
+              </Link>
+              <Link
+                href="/recommendations"
+                className="bg-orange-600 text-white p-6 rounded-lg shadow hover:bg-orange-700 transition"
+              >
+                <h3 className="text-lg font-semibold mb-2">Recommendations</h3>
+                <p className="text-orange-100">Jobs matched for you</p>
+              </Link>
+            </>
+          )}
+
+          {user?.role === 'recruiter' && (
+            <>
+              <Link
+                href="/recruiter/post-job"
+                className="bg-blue-600 text-white p-6 rounded-lg shadow hover:bg-blue-700 transition"
+              >
+                <h3 className="text-lg font-semibold mb-2">Post a Job</h3>
+                <p className="text-blue-100">Create a new job posting</p>
+              </Link>
+              <Link
+                href="/recruiter/my-jobs"
+                className="bg-green-600 text-white p-6 rounded-lg shadow hover:bg-green-700 transition"
+              >
+                <h3 className="text-lg font-semibold mb-2">My Jobs</h3>
+                <p className="text-green-100">Manage your job postings</p>
+              </Link>
+              <Link
+                href="/recruiter/dashboard"
+                className="bg-purple-600 text-white p-6 rounded-lg shadow hover:bg-purple-700 transition"
+              >
+                <h3 className="text-lg font-semibold mb-2">Recruiter Dashboard</h3>
+                <p className="text-purple-100">View analytics and stats</p>
+              </Link>
+              <Link
+                href="/jobs"
+                className="bg-gray-600 text-white p-6 rounded-lg shadow hover:bg-gray-700 transition"
+              >
+                <h3 className="text-lg font-semibold mb-2">All Jobs</h3>
+                <p className="text-gray-100">Browse all job listings</p>
+              </Link>
+            </>
+          )}
+
+          {user?.role === 'admin' && (
+            <>
+              <Link
+                href="/admin/users"
+                className="bg-blue-600 text-white p-6 rounded-lg shadow hover:bg-blue-700 transition"
+              >
+                <h3 className="text-lg font-semibold mb-2">Manage Users</h3>
+                <p className="text-blue-100">View and manage all users</p>
+              </Link>
+              <Link
+                href="/admin/jobs"
+                className="bg-green-600 text-white p-6 rounded-lg shadow hover:bg-green-700 transition"
+              >
+                <h3 className="text-lg font-semibold mb-2">Manage Jobs</h3>
+                <p className="text-green-100">View and manage all jobs</p>
+              </Link>
+              <Link
+                href="/admin/skills"
+                className="bg-purple-600 text-white p-6 rounded-lg shadow hover:bg-purple-700 transition"
+              >
+                <h3 className="text-lg font-semibold mb-2">Skill Taxonomy</h3>
+                <p className="text-purple-100">Manage skill categories</p>
+              </Link>
+              <Link
+                href="/jobs"
+                className="bg-gray-600 text-white p-6 rounded-lg shadow hover:bg-gray-700 transition"
+              >
+                <h3 className="text-lg font-semibold mb-2">All Jobs</h3>
+                <p className="text-gray-100">Browse all job listings</p>
+              </Link>
+            </>
+          )}
+        </div>
+
+        {/* Profile Summary for Candidates */}
+        {user?.role === 'candidate' && profile && (
+          <div className="bg-white rounded-lg shadow p-6 mb-8">
+            <div className="flex justify-between items-start mb-4">
+              <h2 className="text-xl font-semibold text-gray-900">Profile Summary</h2>
+              <Link
+                href="/profile"
+                className="text-blue-600 hover:text-blue-800 text-sm"
+              >
+                Edit Profile
+              </Link>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <p className="text-gray-600 text-sm">Headline</p>
+                <p className="font-medium">{profile.headline || 'Not set'}</p>
+              </div>
+              <div>
+                <p className="text-gray-600 text-sm">Location</p>
+                <p className="font-medium">
+                  {profile.location_city && profile.location_country
+                    ? `${profile.location_city}, ${profile.location_country}`
+                    : 'Not set'}
+                </p>
+              </div>
+              <div>
+                <p className="text-gray-600 text-sm">Experience</p>
+                <p className="font-medium">
+                  {profile.years_experience !== undefined
+                    ? `${profile.years_experience} years`
+                    : 'Not set'}
+                </p>
+              </div>
+              <div>
+                <p className="text-gray-600 text-sm">Profile Status</p>
+                <p className={`font-medium ${profile.is_verified ? 'text-green-600' : 'text-yellow-600'}`}>
+                  {profile.is_verified ? 'Verified' : 'Pending Verification'}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Getting Started for Candidates without Profile */}
+        {user?.role === 'candidate' && !profile && (
+          <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-6 mb-8">
+            <h2 className="text-xl font-semibold text-yellow-800 mb-2">Complete Your Profile</h2>
+            <p className="text-yellow-700 mb-4">
+              Set up your profile to get personalized job recommendations and apply to jobs.
+            </p>
+            <Link
+              href="/profile"
+              className="inline-block bg-yellow-600 text-white px-4 py-2 rounded hover:bg-yellow-700"
+            >
+              Create Profile
+            </Link>
+          </div>
+        )}
+
+        {/* Recent Activity Placeholder */}
+        <div className="bg-white rounded-lg shadow p-6">
+          <h2 className="text-xl font-semibold text-gray-900 mb-4">Recent Activity</h2>
+          <p className="text-gray-500">Your recent activity will appear here.</p>
+        </div>
+      </main>
+    </div>
+  );
+}
+
+
+
+

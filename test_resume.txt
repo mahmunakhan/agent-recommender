@@ -1,0 +1,4 @@
+﻿John Doe
+Python Developer
+5 years experience in Python, Django, FastAPI
+Skills: Python, SQL, Docker, AWS

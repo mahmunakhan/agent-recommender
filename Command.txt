@@ -1,0 +1,82 @@
+activate enviorment
+venv\Scripts\Activate
+
+Invoke-RestMethod -Uri "http://localhost:8000/auth/register" -Method POST -Body $body -ContentType "application/json"
+
+cd C:\Users\daoud\My_Work\RecommenationSystem\job-recommendation-engine\frontend
+npm run dev
+
+# run app1
+cd C:\Users\daoud\My_Work\RecommenationSystem\job-recommendation-engine\api
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+
+## run app2
+cd C:\Users\daoud\My_Work\RecommenationSystem\job-recommendation-engine\frontend
+npm run dev
+
+Then login in the browser with:
+
+Email: demo@test.com
+Password: password123
+
+Log in with one of these recruiter accounts:
+
+
+daoud028@gmail.com
+pwd: ilove1986
+daoud.edgrow@gmail.com
+ pwd: ilove1986
+
+  Recruiter Passwords Fixed
+EmailPassword
+recruiter3@test.com
+password123
+recruiter@techcorp.com
+password123
+daoud.edgrow@gmail.com
+password123
+daoudimca@gmail.com
+password123
+   
+
+
+
+Node Command run
+(venv) (base) PS C:\Users\daoud\My_Work\RecommenationSystem\job-recommendation-engine\frontend> cd C:\Users\daoud\My_Work\RecommenationSystem\job-recommendation-engine\frontend
+>> npm run dev
+
+
+##
+cd C:\Users\daoud\My_Work\RecommenationSystem\job-recommendation-engine
+
+# First, add email config to .env
+$emailConfig = @"
+
+# Email Configuration
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=daoudimca@gmail.com
+SMTP_PASSWORD=your_app_password_here
+EMAIL_FROM=daoudimca@gmail.com
+EMAIL_FROM_NAME=JobMatch AI
+"@
+
+Add-Content -Path .env -Value $emailConfig
+
+Write-Host "Email config added to .env"
+
+# Show the updated .env
+Get-Content .env | Select-String -Pattern "SMTP|EMAIL"
+
+
+
+Recommendations-system
+Generated app password
+Your app password for your device
+eafm evsy vxzq jbho
+
+
+Airflow:
+Airflow Web UI: http://localhost:8085
+Username: admin
+Password: admin123

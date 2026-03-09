@@ -16,7 +16,7 @@ class SkillRecommendationAgent:
     
     def __init__(self):
         self.client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-        self.model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+        self.model = "llama-3.1-70b-versatile"
     
     def _extract_json(self, text: str) -> dict:
         """Extract JSON from LLM response, handling markdown code blocks"""

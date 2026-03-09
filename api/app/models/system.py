@@ -25,7 +25,7 @@ class AuditLog(Base):
     action = Column(String(20), nullable=False)  # create, read, update, delete, login, logout, error
     old_values = Column(JSON)
     new_values = Column(JSON)
-    extra_metadata = Column(JSON)
+    extra_metadata = Column("metadata", JSON, nullable=True)
     ip_address = Column(String(45))
     user_agent = Column(String(500))
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
@@ -44,7 +44,7 @@ class Notification(Base):
     title = Column(String(255), nullable=False)
     message = Column(Text, nullable=False)
     action_url = Column(String(500))
-    extra_metadata = Column(JSON)
+    extra_metadata = Column("metadata", JSON, nullable=True)
     priority = Column(String(10), default="normal", nullable=False)  # low, normal, high, urgent
     channels = Column(JSON, default=["in_app"], nullable=False)
     is_read = Column(Boolean, default=False, nullable=False)

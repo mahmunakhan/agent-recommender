@@ -341,53 +341,6 @@ async def upload_resume(
     profile.updated_at = datetime.utcnow()
     db.commit()
 
-    # ── Generate profile embedding and store in Milvus ──
-    # This enables AI Candidate Screening (matched-candidates endpoint)
-    if parsed_data:
-        try:
-            from app.services.embedding_service import embedding_service
-            from app.services.milvus_service import milvus_service
-
-            # Gather skill names from parsed data
-            skills_data = parsed_data.get("skills", {})
-            skill_names = []
-            if isinstance(skills_data, dict):
-                for cat, items in skills_data.items():
-                    if cat == "skill_proficiency":
-                        continue
-                    if isinstance(items, list):
-                        for name in items:
-                            if isinstance(name, str) and name.strip():
-                                skill_names.append(name.strip())
-            elif isinstance(skills_data, list):
-                for s in skills_data:
-                    if isinstance(s, dict) and s.get("name"):
-                        skill_names.append(s["name"])
-
-            # Gather experience titles
-            experiences = parsed_data.get("experience", [])
-            exp_titles = []
-            for exp in experiences:
-                if isinstance(exp, dict) and exp.get("job_title"):
-                    exp_titles.append(exp["job_title"])
-
-            embedding = embedding_service.generate_profile_embedding({
-                "headline": profile.headline,
-                "summary": profile.summary,
-                "skills": skill_names,
-                "experience": [{"title": t} for t in exp_titles],
-                "desired_role": profile.desired_role,
-            })
-            if embedding:
-                milvus_service.insert_profile_embedding(str(profile.id), embedding)
-                profile.last_vectorized_at = datetime.utcnow()
-                db.commit()
-                logger.info(f"Profile embedding stored in Milvus for profile {profile.id}")
-        except Exception as e:
-            logger.error(f"Profile embedding generation failed: {e}")
-            import traceback
-            traceback.print_exc()
-
     return {
         "message": "Resume uploaded and parsed successfully",
         "s3_path": s3_path,
@@ -431,13 +384,6 @@ def _calc_years(parsed_data: dict) -> int:
 
 def _sync_profile_skills(db: Session, profile: Profile, parsed_data: dict):
     """Sync skills from parsed resume into ProfileSkill table."""
-
-    # ── Step 1: Delete ALL existing profile skills (clean slate on re-upload) ──
-    db.execute(
-        ProfileSkill.__table__.delete().where(ProfileSkill.profile_id == profile.id)
-    )
-    db.flush()  # Ensure deletes are applied before inserts
-
     skills_data = parsed_data.get("skills", {})
 
     skill_entries = []
@@ -466,8 +412,6 @@ def _sync_profile_skills(db: Session, profile: Profile, parsed_data: dict):
         return
 
     added = 0
-    seen_skill_ids = set()  # ── Step 2: Track to prevent duplicate inserts in same batch ──
-
     for entry in skill_entries:
         skill_name = entry["name"]
         if not skill_name or len(skill_name) < 2:
@@ -485,10 +429,14 @@ def _sync_profile_skills(db: Session, profile: Profile, parsed_data: dict):
         if not skill:
             continue
 
-        # Skip if already added in this batch (same skill from different categories)
-        if str(skill.id) in seen_skill_ids:
+        existing = db.execute(
+            select(ProfileSkill)
+            .where(ProfileSkill.profile_id == profile.id)
+            .where(ProfileSkill.skill_id == skill.id)
+        ).scalar_one_or_none()
+
+        if existing:
             continue
-        seen_skill_ids.add(str(skill.id))
 
         prof_info = proficiency_map.get(skill_name.lower(), {})
         proficiency = prof_info.get("level", "intermediate")

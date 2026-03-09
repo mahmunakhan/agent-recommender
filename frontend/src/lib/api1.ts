@@ -123,36 +123,6 @@ export interface Recommendation {
   user_feedback?: string;
 }
 
-export interface MatchedCandidate {
-  user_id: string;
-  profile_id: string;
-  name: string;
-  email: string;
-  headline: string;
-  summary: string;
-  location_city: string;
-  location_country: string;
-  years_experience: number;
-  desired_role: string;
-  is_open_to_work: boolean;
-  profile_skills: string[];
-  matched_skills: string[];
-  missing_skills: string[];
-  scores: {
-    composite: number;
-    vector_similarity: number;
-    skill_match: number;
-    experience_match: number;
-  };
-}
-
-export interface MatchedCandidatesResponse {
-  candidates: MatchedCandidate[];
-  total: number;
-  job_title: string;
-  job_skills_count: number;
-}
-
 
 export interface Notification {
   id: string;
@@ -364,11 +334,6 @@ class ApiClient {
     return this.request('/jobs/recruiter/my-jobs');
   }
 
-  // Recruiter methods - AI Candidate Screening
-  async getMatchedCandidates(jobId: string, limit: number = 50): Promise<MatchedCandidatesResponse> {
-    return this.request('/jobs/' + jobId + '/matched-candidates?limit=' + limit);
-  }
-
   // Application methods - Candidate
   async applyToJob(jobId: string, coverLetter?: string, source: string = 'direct'): Promise<Application> {
     return this.request<Application>('/applications', {
@@ -466,22 +431,9 @@ class ApiClient {
   async markAllNotificationsRead(): Promise<{ message: string }> {
     return this.request('/notifications/read-all', { method: 'POST' });
   }
-
-
-  async preCheckApplication(jobId: string): Promise<any> {
-      return this.request('/applications/check/' + jobId);
-    }
-
-  async generateCoverLetter(jobId: string): Promise<any> {
-    return this.request('/applications/generate-cover-letter?job_id=' + jobId, {
-      method: 'POST',
-    });
-  }
-
 }
 export const api = new ApiClient();
 export default api;
-
 
 
 

@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import api, { Recommendation } from '@/lib/api';
 import NotificationBell from '@/components/NotificationBell';
+import SmartApplyModal from '@/components/SmartApplyModal';
+
 
 export default function RecommendationsPage() {
   const router = useRouter();
@@ -12,7 +14,8 @@ export default function RecommendationsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<'all' | 'high' | 'medium'>('all');
-
+  const [applyJobId, setApplyJobId] = useState<string | null>(null);
+  
   useEffect(() => {
     const token = api.getToken();
     if (!token) {
@@ -209,21 +212,33 @@ export default function RecommendationsPage() {
                       )}
                     </div>
 
-                    <div className="flex gap-3 mt-4 pt-4 border-t">
-                      <Link href={'/jobs/' + rec.job.id} className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 text-sm">
-                        View Job
-                      </Link>
-                      <Link href="/skill-gaps" className="bg-gray-100 text-gray-700 px-4 py-2 rounded-md hover:bg-gray-200 text-sm">
-                        Analyze Skill Gaps
-                      </Link>
-                    </div>
+                  <div className="flex gap-3 mt-4 pt-4 border-t">
+                    <Link href={'/jobs/' + rec.job.id} className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 text-sm">
+                      View Job
+                    </Link>
+                    <button onClick={() => setApplyJobId(rec.job.id)} className="bg-green-600 text-white px-4 py-2 rounded-md hover:bg-green-700 text-sm">
+                      Apply Now
+                    </button>
+                    <Link href="/skill-gaps" className="bg-gray-100 text-gray-700 px-4 py-2 rounded-md hover:bg-gray-200 text-sm">
+                      Analyze Skill Gaps
+                    </Link>
+                  </div>
                   </div>
                 ))}
               </div>
             )}
-          </>
-        )}
-      </main>
-    </div>
-  );
-}
+            </>
+            )}
+          </main>
+
+          {applyJobId && (
+            <SmartApplyModal
+              jobId={applyJobId}
+              onClose={() => setApplyJobId(null)}
+              onApplied={() => setApplyJobId(null)}
+            />
+          )}
+        </div>
+      );
+    }
+      

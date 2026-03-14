@@ -1,7 +1,0 @@
- Next Steps (Optional)
-
-Resume Upload & Parsing - Test LLM-based resume parsing
-Frontend UI - Build React/Next.js interface
-Airflow DAGs - Set up batch processing pipelines
-Job Scraping - Add external job sources
-Learning Resources - Seed courses/tutorials database

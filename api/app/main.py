@@ -24,6 +24,8 @@ from app.routers.recommendations import router as recommendations_router
 from app.routers.applications import router as applications_router
 from app.routers.notifications import router as notifications_router
 from app.routers.scheduled_tasks import router as scheduled_tasks_router
+from app.routers.ats import router as ats_router
+from app.routers import talents
 
 
 @asynccontextmanager
@@ -108,6 +110,8 @@ app.include_router(recommendations_router)
 app.include_router(applications_router)
 app.include_router(notifications_router)
 app.include_router(scheduled_tasks_router)
+app.include_router(ats_router)
+app.include_router(talents.router)
 
 
 # ===== HEALTH ENDPOINTS =====

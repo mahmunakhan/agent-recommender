@@ -194,6 +194,16 @@ export default function ViewApplicantsPage() {
             </div>
             <div className="flex items-center gap-3">
               <NotificationBell />
+              <Link
+                href={`/recruiter/jobs/${jobId}/ats`}
+                className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                    d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2a1 1 0 01-.293.707L13 13.414V19a1 1 0 01-.553.894l-4 2A1 1 0 017 21v-7.586L3.293 6.707A1 1 0 013 6V4z"/>
+                </svg>
+                ATS Filter
+              </Link>
               <div className="flex bg-gray-100 rounded-md p-0.5">
                 <button onClick={() => setView('list')}
                   className={`px-3 py-1.5 rounded text-sm font-medium ${view === 'list' ? 'bg-white shadow text-gray-900' : 'text-gray-500'}`}>

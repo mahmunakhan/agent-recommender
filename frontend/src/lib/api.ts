@@ -153,6 +153,60 @@ export interface MatchedCandidatesResponse {
   job_skills_count: number;
 }
 
+export interface ATSConfig {
+  min_match_score: number;
+  require_all_required_skills: boolean;
+  min_experience_years: number | null;
+  exclude_statuses: string[];
+}
+
+export interface ATSCandidate {
+  application_id: string;
+  user_id: string;
+  name: string;
+  email: string;
+  headline?: string;
+  years_experience?: number;
+  status: string;
+  applied_at?: string;
+  match_score_at_apply?: number;
+  has_resume: boolean;
+  is_verified: boolean;
+  ats_score: number;
+  skill_score: number;
+  experience_score: number;
+  completeness_score: number;
+  fit_label: 'Strong Fit' | 'Good Fit' | 'Partial Fit' | 'Low Fit';
+  fit_color: 'green' | 'blue' | 'yellow' | 'red';
+  matched_skills: string[];
+  missing_skills: string[];
+  missing_required_count: number;
+  rank: number;
+}
+
+export interface ATSExcluded {
+  application_id: string;
+  user_id: string;
+  name: string;
+  email: string;
+  status: string;
+  exclusion_reason: string;
+  match_score_at_apply?: number;
+  years_experience?: number;
+}
+
+export interface ATSResult {
+  job_id: string;
+  job_title: string;
+  total_applicants: number;
+  filtered_count: number;
+  excluded_count: number;
+  fit_summary: Record<string, number>;
+  config: ATSConfig;
+  candidates: ATSCandidate[];
+  excluded: ATSExcluded[];
+}
+
 
 export interface Notification {
   id: string;
@@ -475,6 +529,14 @@ class ApiClient {
   async generateCoverLetter(jobId: string): Promise<any> {
     return this.request('/applications/generate-cover-letter?job_id=' + jobId, {
       method: 'POST',
+    });
+  }
+
+  // ATS methods
+  async runATS(jobId: string, config: ATSConfig): Promise<ATSResult> {
+    return this.request<ATSResult>('/ats/jobs/' + jobId + '/run', {
+      method: 'POST',
+      body: JSON.stringify(config),
     });
   }
 

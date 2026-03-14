@@ -2,9 +2,13 @@
 Jobs Router
 Job posting management, search, AI skill validation, and JD auto-parsing
 
-v2.0 Changes:
-- NEW: POST /jobs/validate-skill   → AI agent validates unknown skills (spelling, web verify)
-- NEW: POST /jobs/parse-description → AI agent parses JD to auto-fill form fields + extract skills
+v3.1 Changes:
+- UPGRADED: POST /jobs/parse-description → Now supports TWO modes:
+  1. GENERATE mode: Short keywords/instructions → AI writes a full professional JD
+  2. PARSE mode: Full JD text → AI extracts structured fields
+- NEW field: description_generated → Returns AI-written JD text for recruiter to review/edit
+- FIXED: Retry logic when LLM returns plain text instead of JSON
+- POST /jobs/validate-skill → AI agent validates unknown skills (unchanged)
 - Existing endpoints unchanged
 """
 
@@ -69,11 +73,12 @@ class SkillValidateResponse(BaseModel):
     newly_created_id: Optional[str] = None    # If we just added it
 
 class JDParseRequest(BaseModel):
-    description: str  # raw job description text
+    description: str  # raw job description text OR short keywords/instructions
 
 class JDParseResponse(BaseModel):
     title: Optional[str] = None
     company_name: Optional[str] = None
+    description_generated: Optional[str] = None   # AI-written JD (only in generate mode)
     location_city: Optional[str] = None
     location_country: Optional[str] = None
     location_type: Optional[str] = None           # onsite / remote / hybrid
@@ -134,7 +139,6 @@ async def validate_skill(
     fuzzy = db.execute(
         select(Skill).where(Skill.name.ilike(f"%{raw}%")).limit(5)
     ).scalars().all()
-    # Check if any fuzzy result is a very close match (e.g. "React.js" vs "ReactJS")
     for s in fuzzy:
         if _normalize(s.name) == _normalize(raw):
             return SkillValidateResponse(
@@ -172,12 +176,10 @@ Respond ONLY with this JSON (no markdown, no backticks):
 
     try:
         ai_text = _call_groq(system_prompt, user_prompt, temperature=0.0)
-        # Strip markdown fences if present
         ai_text = re.sub(r"```json\s*|```", "", ai_text).strip()
         ai_result = json.loads(ai_text)
     except json.JSONDecodeError:
         logger.warning(f"AI returned non-JSON for skill '{raw}': {ai_text[:200]}")
-        # Fallback: treat as valid with low confidence
         ai_result = {
             "is_valid": True,
             "corrected_name": raw,
@@ -188,7 +190,6 @@ Respond ONLY with this JSON (no markdown, no backticks):
         }
     except Exception as e:
         logger.error(f"AI skill validation failed: {e}")
-        # If AI is down, accept with low confidence rather than blocking recruiter
         ai_result = {
             "is_valid": True,
             "corrected_name": raw,
@@ -215,7 +216,7 @@ Respond ONLY with this JSON (no markdown, no backticks):
             confidence=confidence,
         )
 
-    # ── Step 4: Re-check DB with corrected name (AI might have fixed spelling) ──
+    # ── Step 4: Re-check DB with corrected name ──
     re_check = db.execute(
         select(Skill).where(func.lower(Skill.name) == canonical.lower())
     ).scalar_one_or_none()
@@ -231,7 +232,6 @@ Respond ONLY with this JSON (no markdown, no backticks):
         )
 
     # ── Step 5: Insert new skill into taxonomy ──
-    # Map AI category to our skill_type enum
     skill_type_map = {
         "language": "technical",
         "framework": "technical",
@@ -252,9 +252,9 @@ Respond ONLY with this JSON (no markdown, no backticks):
         slug=canonical.lower().replace(" ", "-").replace(".", "-"),
         skill_type=db_skill_type,
         description=description[:500] if description else None,
-        is_verified=False,       # Flagged for admin review later
+        is_verified=False,
         popularity_score=0,
-        source="recruiter_ai",   # Track how it was added
+        source="recruiter_ai",
     )
     try:
         db.add(new_skill)
@@ -264,7 +264,6 @@ Respond ONLY with this JSON (no markdown, no backticks):
     except Exception as e:
         db.rollback()
         logger.error(f"Failed to insert new skill '{canonical}': {e}")
-        # Skill might already exist due to race condition
         re_check2 = db.execute(
             select(Skill).where(func.lower(Skill.name) == canonical.lower())
         ).scalar_one_or_none()
@@ -292,7 +291,7 @@ Respond ONLY with this JSON (no markdown, no backticks):
 
 
 # ============================================================
-# 2) POST /jobs/parse-description  — JD Auto-Parser Agent
+# 2) POST /jobs/parse-description  — JD Auto-Parser + Generator Agent
 # ============================================================
 @router.post("/parse-description", response_model=JDParseResponse)
 async def parse_job_description(
@@ -301,29 +300,63 @@ async def parse_job_description(
     db: Session = Depends(get_db),
 ):
     """
-    Parse a job description and extract structured fields.
-    Uses Groq AI to extract: title, location, skills, experience, salary, etc.
-    Then matches extracted skills against the DB taxonomy.
+    Smart JD endpoint — TWO modes:
+    1. GENERATE mode: If input is short keywords/instructions (< 250 chars or contains
+       phrases like "write me", "create", "generate"), AI generates a full professional JD.
+    2. PARSE mode: If input is a full JD, AI extracts structured fields from it.
+
+    In both modes, returns structured fields + matched skills from taxonomy.
+    The recruiter can edit ALL fields after auto-fill including the generated JD text.
     """
     desc = req.description.strip()
-    if not desc or len(desc) < 30:
-        raise HTTPException(status_code=400, detail="Job description too short (min 30 chars)")
+    if not desc or len(desc) < 10:
+        raise HTTPException(status_code=400, detail="Input too short (min 10 chars)")
 
-    system_prompt = """You are an expert Job Description Parser AI.
+    # ── Detect mode: GENERATE vs PARSE ──
+    generate_triggers = [
+        "write me", "write a", "create a", "generate", "draft a", "make a jd",
+        "make me", "prepare a", "compose", "build a jd", "write jd", "create jd",
+    ]
+    is_short = len(desc) < 250
+    has_trigger = any(t in desc.lower() for t in generate_triggers)
+    is_keyword_style = is_short and ("," in desc or "skills" in desc.lower() or "experience" in desc.lower())
 
-Given a raw job posting description, extract ALL structured fields.
+    mode = "generate" if (has_trigger or is_keyword_style) else "parse"
+    logger.info(f"JD endpoint mode: {mode} (len={len(desc)}, trigger={has_trigger}, keyword={is_keyword_style})")
 
-Rules:
-1. Extract every field you can find. Use null for fields not mentioned.
-2. For skills: list EVERY technology, tool, language, framework, methodology mentioned.
-   Mark each as "required", "preferred", or "nice_to_have" based on context.
-3. For location_type: infer from text ("remote", "onsite", "hybrid"). Default null.
-4. For employment_type: infer ("full_time", "part_time", "contract", "internship"). Default null.
-5. For salary: extract numbers and currency if mentioned. Convert to annual if hourly/monthly.
-6. Be thorough — extract even skills mentioned casually in responsibilities section.
+    if mode == "generate":
+        system_prompt = """You are an expert Job Description Writer and Parser AI.
 
-Respond ONLY with this JSON (no markdown, no backticks, no preamble):
+The recruiter has given you rough keywords, bullet points, or a short instruction describing a job role.
+Your job is to:
+1. GENERATE a complete, professional, well-formatted job description based on the input.
+2. EXTRACT all structured fields from what you generated.
+
+GENERATION RULES:
+- Write a polished, real-world quality JD with these sections:
+  * About the Position (brief intro paragraph with Role, Location, Experience, Job Type summary)
+  * What You'll Do (5-8 bullet points of key responsibilities, each starting with *)
+  * Expertise You'll Bring (5-8 bullet points of required qualifications/skills, each starting with *)
+  * Nice to Have (3-4 bullet points of preferred qualifications, each starting with *)
+  * Benefits (4-6 bullet points, each starting with *)
+- Use professional language, avoid generic filler. Make it sound like a real company posting.
+- If the recruiter mentions city names, AUTO-DETECT the country:
+  * Pune, Mumbai, Bombay, Bangalore, Bengaluru, Hyderabad, Chennai, Delhi, Nashik, Noida, Gurgaon, Kolkata → India
+  * New York, San Francisco, Seattle, Austin, Chicago, Boston, Los Angeles → United States
+  * London, Manchester, Birmingham, Edinburgh → United Kingdom
+  * Dubai, Abu Dhabi → UAE
+  * If multiple cities are mentioned, pick the first for location_city and mention all cities in the JD text.
+- If salary is mentioned as "lakh" or "LPA" → currency is INR
+- If salary is mentioned as "k" per month, multiply by 12 for annual. Example: "50k-1lakh per month" → salary_min=600000, salary_max=1200000, currency=INR
+- If salary unit not clear but cities are Indian → assume INR
+- For skills: include ALL technologies, tools, frameworks mentioned by the recruiter + add reasonable related skills for the role.
+- Use newlines (\\n) to format the JD text. Use * for bullet points.
+
+CRITICAL: You MUST respond with ONLY a valid JSON object. No plain text before or after. No markdown.
+Put the ENTIRE generated JD inside the "description_generated" field as a single string with \\n for newlines.
+
 {
+  "description_generated": "About the Position\\n---\\nWe are seeking...\\n\\nWhat You'll Do\\n---\\n* Build and deploy...\\n* Design scalable...",
   "title": "string or null",
   "company_name": "string or null",
   "location_city": "string or null",
@@ -332,7 +365,7 @@ Respond ONLY with this JSON (no markdown, no backticks, no preamble):
   "employment_type": "full_time|part_time|contract|internship or null",
   "salary_min": integer_or_null,
   "salary_max": integer_or_null,
-  "salary_currency": "USD|SAR|EUR|... or null",
+  "salary_currency": "INR|USD|EUR|GBP|SAR or null",
   "experience_min_years": integer_or_null,
   "experience_max_years": integer_or_null,
   "skills": [
@@ -342,19 +375,103 @@ Respond ONLY with this JSON (no markdown, no backticks, no preamble):
   "responsibilities": ["string", "string"],
   "benefits": ["string", "string"]
 }"""
+        user_prompt = f"RESPOND WITH ONLY JSON. Generate a professional JD from these keywords/instructions:\n\n{desc[:4000]}"
+    else:
+        # PARSE MODE — original behavior
+        system_prompt = """You are an expert Job Description Parser AI.
+Given a raw job posting description, extract ALL structured fields.
 
-    user_prompt = f"Parse this job description:\n\n{desc[:6000]}"
+Rules:
+1. Extract every field you can find. Use null for fields not mentioned.
+2. For skills: list EVERY technology, tool, language, framework, methodology mentioned.
+   Mark each as "required", "preferred", or "nice_to_have" based on context.
+3. For location_type: infer from text ("remote", "onsite", "hybrid"). Default null.
+4. For employment_type: infer ("full_time", "part_time", "contract", "internship"). Default null.
+5. For salary: extract numbers and currency if mentioned. Convert to annual if hourly/monthly.
+   If salary uses "lakh" or "LPA" → currency is INR.
+6. Auto-detect country from city names if not explicitly stated:
+   Pune, Mumbai, Bangalore, Hyderabad, Chennai, Delhi, Nashik → India
+   New York, San Francisco, Seattle → United States
+   London, Manchester → United Kingdom
+7. Be thorough — extract even skills mentioned casually in responsibilities section.
+8. Set description_generated to null (since input is already a full JD).
 
+CRITICAL: Respond with ONLY a valid JSON object. No plain text. No markdown.
+
+{
+  "description_generated": null,
+  "title": "string or null",
+  "company_name": "string or null",
+  "location_city": "string or null",
+  "location_country": "string or null",
+  "location_type": "onsite|remote|hybrid or null",
+  "employment_type": "full_time|part_time|contract|internship or null",
+  "salary_min": integer_or_null,
+  "salary_max": integer_or_null,
+  "salary_currency": "INR|USD|EUR|GBP|SAR or null",
+  "experience_min_years": integer_or_null,
+  "experience_max_years": integer_or_null,
+  "skills": [
+    {"name": "Python", "requirement_type": "required"},
+    {"name": "LangGraph", "requirement_type": "preferred"}
+  ],
+  "responsibilities": ["string", "string"],
+  "benefits": ["string", "string"]
+}"""
+        user_prompt = f"RESPOND WITH ONLY JSON. Parse this job description:\n\n{desc[:6000]}"
+
+    # ── Call LLM with retry logic ──
     try:
-        ai_text = _call_groq(system_prompt, user_prompt, temperature=0.1)
+        ai_text = _call_groq(system_prompt, user_prompt, temperature=0.2 if mode == "generate" else 0.1)
         ai_text = re.sub(r"```json\s*|```", "", ai_text).strip()
-        parsed = json.loads(ai_text)
-    except json.JSONDecodeError:
-        logger.warning(f"AI JD parse returned non-JSON: {ai_text[:300]}")
-        raise HTTPException(status_code=422, detail="AI could not parse the job description. Please try rephrasing.")
+
+        # Try to parse JSON
+        try:
+            parsed = json.loads(ai_text)
+        except json.JSONDecodeError:
+            # LLM returned plain text instead of JSON — retry with conversion prompt
+            logger.warning(f"AI JD {mode} returned non-JSON, retrying with conversion prompt...")
+            convert_prompt = f"""Convert the following text into ONLY a JSON object with these exact keys:
+description_generated, title, company_name, location_city, location_country, location_type, employment_type, salary_min, salary_max, salary_currency, experience_min_years, experience_max_years, skills, responsibilities, benefits.
+
+For skills use: [{{"name": "X", "requirement_type": "required"}}]
+For description_generated: put the ENTIRE text below as a single string (use \\n for newlines).
+Use null for unknown fields. For responsibilities and benefits use empty lists [] if not clear.
+
+RESPOND WITH ONLY VALID JSON, NO OTHER TEXT:
+
+{ai_text[:5000]}"""
+            ai_text2 = _call_groq(
+                "You are a JSON converter. Output ONLY valid JSON. No markdown, no backticks, no explanation.",
+                convert_prompt,
+                temperature=0.0,
+            )
+            ai_text2 = re.sub(r"```json\s*|```", "", ai_text2).strip()
+            try:
+                parsed = json.loads(ai_text2)
+            except json.JSONDecodeError:
+                # Last resort: wrap the original text as a generated description
+                logger.warning(f"Retry also failed, wrapping as description_generated")
+                parsed = {
+                    "description_generated": ai_text,
+                    "title": None,
+                    "company_name": None,
+                    "location_city": None,
+                    "location_country": None,
+                    "location_type": None,
+                    "employment_type": None,
+                    "salary_min": None,
+                    "salary_max": None,
+                    "salary_currency": None,
+                    "experience_min_years": None,
+                    "experience_max_years": None,
+                    "skills": [],
+                    "responsibilities": [],
+                    "benefits": [],
+                }
     except Exception as e:
-        logger.error(f"AI JD parse failed: {e}")
-        raise HTTPException(status_code=500, detail="AI parsing service unavailable. Please try again.")
+        logger.error(f"AI JD {mode} failed: {e}")
+        raise HTTPException(status_code=500, detail="AI service unavailable. Please try again.")
 
     # ── Match extracted skills against DB taxonomy ──
     extracted_skills = parsed.get("skills", [])
@@ -390,9 +507,7 @@ Respond ONLY with this JSON (no markdown, no backticks, no preamble):
                     best = f
                     break
             if not best and fuzzy:
-                # Pick closest by length similarity
                 best = min(fuzzy, key=lambda x: abs(len(x.name) - len(name)))
-                # Only accept if reasonably close
                 if abs(len(best.name) - len(name)) > 5:
                     best = None
 
@@ -404,7 +519,6 @@ Respond ONLY with this JSON (no markdown, no backticks, no preamble):
                     "in_taxonomy": True,
                 })
             else:
-                # Not in taxonomy — frontend will trigger validate-skill for these
                 matched_skills.append({
                     "name": name,
                     "requirement_type": req_type,
@@ -415,6 +529,7 @@ Respond ONLY with this JSON (no markdown, no backticks, no preamble):
     return JDParseResponse(
         title=parsed.get("title"),
         company_name=parsed.get("company_name"),
+        description_generated=parsed.get("description_generated"),
         location_city=parsed.get("location_city"),
         location_country=parsed.get("location_country"),
         location_type=parsed.get("location_type"),
@@ -425,8 +540,8 @@ Respond ONLY with this JSON (no markdown, no backticks, no preamble):
         experience_min_years=_safe_int(parsed.get("experience_min_years")),
         experience_max_years=_safe_int(parsed.get("experience_max_years")),
         skills=matched_skills,
-        responsibilities=parsed.get("responsibilities", []),
-        benefits=parsed.get("benefits", []),
+        responsibilities=parsed.get("responsibilities") or [],
+        benefits=parsed.get("benefits") or [],
     )
 
 
@@ -464,12 +579,9 @@ async def list_jobs(
     page_size: int = Query(20, ge=1, le=50),
     db: Session = Depends(get_db)
 ):
-    """
-    List and filter jobs.
-    """
+    """List and filter jobs."""
     query = select(Job).where(Job.is_active == True)
     
-    # Text search
     if search:
         query = query.where(
             or_(
@@ -479,7 +591,6 @@ async def list_jobs(
             )
         )
     
-    # Location filter
     if location:
         query = query.where(
             or_(
@@ -488,19 +599,15 @@ async def list_jobs(
             )
         )
     
-    # Location type filter
     if location_type:
         query = query.where(Job.location_type == location_type)
     
-    # Employment type filter
     if employment_type:
         query = query.where(Job.employment_type == employment_type)
     
-    # Salary filter
     if salary_min:
         query = query.where(Job.salary_max >= salary_min)
     
-    # Experience filter
     if experience_max:
         query = query.where(
             or_(
@@ -509,14 +616,11 @@ async def list_jobs(
             )
         )
     
-    # Order by posted date
     query = query.order_by(Job.posted_at.desc(), Job.created_at.desc())
     
-    # Count total
     count_query = select(func.count()).select_from(query.subquery())
     total = db.execute(count_query).scalar()
     
-    # Pagination
     offset = (page - 1) * page_size
     query = query.offset(offset).limit(page_size)
     
@@ -558,14 +662,10 @@ async def create_job(
     current_user: TokenData = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """
-    Create a new job posting.
-    Requires recruiter or admin role.
-    """
+    """Create a new job posting. Requires recruiter or admin role."""
     if current_user.role not in ["recruiter", "admin"]:
         raise HTTPException(status_code=403, detail="Only recruiters can post jobs")
     
-    # Create job with posted_by_id
     new_job = Job(
         title=job_data.title,
         company_name=job_data.company_name,
@@ -581,7 +681,7 @@ async def create_job(
         experience_max_years=job_data.experience_max_years,
         source_type="internal",
         posted_at=datetime.utcnow(),
-        posted_by_id=current_user.user_id,  # Set the recruiter who posted
+        posted_by_id=current_user.user_id,
         is_active=True
     )
     
@@ -589,7 +689,6 @@ async def create_job(
     db.commit()
     db.refresh(new_job)
     
-    # Parse job with LLM to extract requirements
     try:
         parsed = llm_service.parse_job_description(job_data.description_raw)
         if parsed:
@@ -599,7 +698,6 @@ async def create_job(
     except Exception as e:
         print(f"LLM parsing error: {e}")
     
-    # Generate embedding
     try:
         embedding = embedding_service.generate_job_embedding({
             "title": new_job.title,
@@ -630,20 +728,15 @@ async def update_job(
     current_user: TokenData = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """
-    Update a job posting.
-    Only the recruiter who posted or admin can update.
-    """
+    """Update a job posting. Only the recruiter who posted or admin can update."""
     job = db.get(Job, job_id)
     
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     
-    # Check permission
     if current_user.role != "admin" and job.posted_by_id != current_user.user_id:
         raise HTTPException(status_code=403, detail="Not authorized to update this job")
     
-    # Update allowed fields
     allowed_fields = [
         "title", "company_name", "description_raw", "location_city",
         "location_country", "location_type", "employment_type",
@@ -659,7 +752,6 @@ async def update_job(
     db.commit()
     db.refresh(job)
     
-    # Re-generate embedding if description changed
     if "description_raw" in job_data:
         try:
             embedding = embedding_service.generate_job_embedding({
@@ -688,29 +780,22 @@ async def delete_job(
     current_user: TokenData = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """
-    Delete a job posting.
-    Only the recruiter who posted or admin can delete.
-    """
+    """Delete a job posting. Only the recruiter who posted or admin can delete."""
     job = db.get(Job, job_id)
     
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     
-    # Check permission
     if current_user.role != "admin" and job.posted_by_id != current_user.user_id:
         raise HTTPException(status_code=403, detail="Not authorized to delete this job")
     
-    # Delete job skills first
     db.execute(
         JobSkill.__table__.delete().where(JobSkill.job_id == job_id)
     )
     
-    # Delete the job
     db.delete(job)
     db.commit()
     
-    # Remove from Milvus
     try:
         milvus_service.delete_job_embedding(job_id)
     except Exception as e:
@@ -721,15 +806,12 @@ async def delete_job(
 
 @router.get("/{job_id}")
 async def get_job(job_id: str, db: Session = Depends(get_db)):
-    """
-    Get job details.
-    """
+    """Get job details."""
     job = db.get(Job, job_id)
     
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     
-    # Get skills
     job_skills = db.execute(
         select(JobSkill, Skill)
         .join(Skill)
@@ -783,25 +865,17 @@ async def get_matched_candidates(
 ):
     """
     Find candidates whose profiles are most similar to this job.
-    
-    Uses a composite scoring system:
-      - Vector similarity (Milvus cosine): 40% weight  → semantic match
-      - Skill overlap:                     35% weight  → hard skill match
-      - Experience match:                  25% weight  → years alignment
-    
-    Returns ranked list of candidates with score breakdowns.
+    Uses composite scoring: vector similarity (40%) + skill overlap (35%) + experience match (25%).
     """
     from app.services.embedding_service import embedding_service as emb_svc
     from app.services.milvus_service import milvus_service as mil_svc
 
-    # ── Permission check ──
     job = db.get(Job, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     if current_user.role != "admin" and job.posted_by_id != current_user.user_id:
         raise HTTPException(status_code=403, detail="Not authorized to screen candidates for this job")
 
-    # ── Generate job embedding ──
     job_embedding = emb_svc.generate_job_embedding({
         "title": job.title,
         "company_name": job.company_name,
@@ -810,16 +884,14 @@ async def get_matched_candidates(
     if not job_embedding:
         raise HTTPException(status_code=500, detail="Failed to generate job embedding")
 
-    # ── Search similar profiles in Milvus ──
     similar_profiles = mil_svc.search_similar_profiles(job_embedding, top_k=limit)
     if not similar_profiles:
         return {"candidates": [], "total": 0, "job_title": job.title}
 
-    # ── Get job's required skills ──
     job_skills_rows = db.execute(
         select(JobSkill, Skill).join(Skill).where(JobSkill.job_id == job_id)
     ).all()
-    job_skill_map = {}       # skill_id → {name, requirement_type, min_years}
+    job_skill_map = {}
     job_skill_ids = set()
     for row in job_skills_rows:
         js = row.JobSkill
@@ -831,11 +903,9 @@ async def get_matched_candidates(
             "min_years": js.min_years,
         }
 
-    # ── Build similarity lookup ──
     similarity_map = {p["profile_id"]: p["similarity"] for p in similar_profiles}
     profile_ids = list(similarity_map.keys())
 
-    # ── Fetch profiles ──
     profiles = db.execute(
         select(Profile).where(Profile.id.in_(profile_ids))
     ).scalars().all()
@@ -843,18 +913,15 @@ async def get_matched_candidates(
     if not profiles:
         return {"candidates": [], "total": 0, "job_title": job.title}
 
-    # ── Build candidate list with composite scores ──
     candidates = []
     for profile in profiles:
         pid = str(profile.id)
         vector_score = max(0.0, min(1.0, similarity_map.get(pid, 0.0)))
 
-        # Get user info
         user = db.get(User, profile.user_id)
         if not user:
             continue
 
-        # Get profile skills
         p_skills_rows = db.execute(
             select(ProfileSkill, Skill)
             .join(Skill, ProfileSkill.skill_id == Skill.id)
@@ -869,7 +936,6 @@ async def get_matched_candidates(
             profile_skill_ids.add(str(ps.skill_id))
             profile_skill_names.append(sk.name)
 
-        # ── Skill match score ──
         matched_skills = []
         missing_skills = []
         if job_skill_ids:
@@ -878,7 +944,6 @@ async def get_matched_candidates(
                     matched_skills.append(info["name"])
                 else:
                     missing_skills.append(info["name"])
-            # Weight required skills 2x vs preferred
             required_count = sum(1 for s in job_skill_map.values() if s["requirement_type"] == "required")
             preferred_count = len(job_skill_map) - required_count
             total_weight = (required_count * 2.0) + (preferred_count * 1.0) if job_skill_map else 1.0
@@ -890,29 +955,25 @@ async def get_matched_candidates(
 
             skill_score = matched_weight / total_weight if total_weight > 0 else 0.0
         else:
-            skill_score = 0.5  # No skills specified — neutral
+            skill_score = 0.5
 
-        # ── Experience match score ──
         candidate_exp = profile.years_experience or 0
         job_min_exp = job.experience_min_years or 0
         job_max_exp = job.experience_max_years or (job_min_exp + 10)
 
         if job_min_exp == 0 and job_max_exp == 0:
-            exp_score = 0.7  # No requirement — slight bonus
+            exp_score = 0.7
         elif job_min_exp <= candidate_exp <= job_max_exp:
-            exp_score = 1.0  # Perfect range
+            exp_score = 1.0
         elif candidate_exp > job_max_exp:
-            # Overqualified — still decent
             overshoot = candidate_exp - job_max_exp
             exp_score = max(0.3, 1.0 - (overshoot * 0.1))
         elif candidate_exp < job_min_exp:
-            # Under-qualified
             shortfall = job_min_exp - candidate_exp
             exp_score = max(0.0, 1.0 - (shortfall * 0.2))
         else:
             exp_score = 0.5
 
-        # ── Composite score ──
         composite = (0.40 * vector_score) + (0.35 * skill_score) + (0.25 * exp_score)
 
         candidates.append({
@@ -938,7 +999,6 @@ async def get_matched_candidates(
             },
         })
 
-    # Sort by composite score descending
     candidates.sort(key=lambda c: c["scores"]["composite"], reverse=True)
 
     return {
@@ -956,15 +1016,10 @@ async def add_job_skill(
     current_user: TokenData = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """
-    Add a skill requirement to a job.
-    """
+    """Add a skill requirement to a job."""
     job = db.get(Job, job_id)
-    
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    
-    # Check permission
     if current_user.role != "admin" and job.posted_by_id != current_user.user_id:
         raise HTTPException(status_code=403, detail="Not authorized to modify this job")
     
@@ -972,36 +1027,26 @@ async def add_job_skill(
     requirement_type = skill_data.get("requirement_type", "required")
     min_years = skill_data.get("min_years")
     
-    # Check if skill exists
     skill = db.get(Skill, skill_id)
     if not skill:
         raise HTTPException(status_code=404, detail="Skill not found")
     
-    # Check if already added
     existing = db.execute(
-        select(JobSkill).where(
-            JobSkill.job_id == job_id,
-            JobSkill.skill_id == skill_id
-        )
+        select(JobSkill).where(JobSkill.job_id == job_id, JobSkill.skill_id == skill_id)
     ).scalar_one_or_none()
     
     if existing:
-        # Update existing
         existing.requirement_type = requirement_type
         existing.min_years = min_years
         db.commit()
         return {"message": "Skill updated"}
     
-    # Create new
     job_skill = JobSkill(
-        job_id=job_id,
-        skill_id=skill_id,
-        requirement_type=requirement_type,
-        min_years=min_years
+        job_id=job_id, skill_id=skill_id,
+        requirement_type=requirement_type, min_years=min_years
     )
     db.add(job_skill)
     db.commit()
-    
     return {"message": "Skill added to job"}
 
 
@@ -1012,23 +1057,15 @@ async def remove_job_skill(
     current_user: TokenData = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """
-    Remove a skill from a job.
-    """
+    """Remove a skill from a job."""
     job = db.get(Job, job_id)
-    
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    
-    # Check permission
     if current_user.role != "admin" and job.posted_by_id != current_user.user_id:
         raise HTTPException(status_code=403, detail="Not authorized to modify this job")
     
     job_skill = db.execute(
-        select(JobSkill).where(
-            JobSkill.job_id == job_id,
-            JobSkill.skill_id == skill_id
-        )
+        select(JobSkill).where(JobSkill.job_id == job_id, JobSkill.skill_id == skill_id)
     ).scalar_one_or_none()
     
     if not job_skill:
@@ -1036,7 +1073,6 @@ async def remove_job_skill(
     
     db.delete(job_skill)
     db.commit()
-    
     return {"message": "Skill removed from job"}
 
 
@@ -1046,31 +1082,22 @@ async def semantic_search_jobs(
     limit: int = Query(20, ge=1, le=50),
     db: Session = Depends(get_db)
 ):
-    """
-    Search jobs using semantic similarity.
-    """
-    # Generate query embedding
+    """Search jobs using semantic similarity."""
     query_embedding = embedding_service.generate_embedding(query)
-    
     if not query_embedding:
         raise HTTPException(status_code=500, detail="Failed to generate embedding")
     
-    # Search in Milvus
     results = milvus_service.search_similar_jobs(query_embedding, top_k=limit)
-    
     if not results:
         return {"jobs": [], "query": query}
     
-    # Fetch job details
     job_ids = [r["job_id"] for r in results]
     jobs = db.execute(
         select(Job).where(Job.id.in_(job_ids)).where(Job.is_active == True)
     ).scalars().all()
     
-    # Create lookup
     job_lookup = {j.id: j for j in jobs}
     
-    # Build response with similarity scores
     response_jobs = []
     for r in results:
         job = job_lookup.get(r["job_id"])
@@ -1094,9 +1121,7 @@ async def get_my_jobs(
     current_user: TokenData = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """
-    Get all jobs posted by the current recruiter.
-    """
+    """Get all jobs posted by the current recruiter."""
     if current_user.role not in ["recruiter", "admin"]:
         raise HTTPException(status_code=403, detail="Only recruiters can access this")
     

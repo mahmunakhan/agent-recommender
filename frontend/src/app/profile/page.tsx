@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
+import Navbar from '@/components/Navbar';
 import { api, Profile } from '@/lib/api';
 
 /* ─── Types ─── */
@@ -348,22 +349,7 @@ export default function ProfilePage() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-blue-50/30">
-      <nav className="sticky top-0 z-50 bg-white/80 backdrop-blur-xl border-b border-gray-100">
-        <div className="max-w-5xl mx-auto px-6 flex items-center justify-between h-14">
-          <div className="flex items-center gap-8">
-            <Link href="/dashboard" className="text-lg font-bold bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">JobMatch AI</Link>
-            <div className="hidden sm:flex items-center gap-1">
-              {[{ h: '/dashboard', l: 'Dashboard' }, { h: '/jobs', l: 'Jobs' }, { h: '/recommendations', l: 'Matches' }, { h: '/profile', l: 'Profile', a: true }].map(lk => (
-                <Link key={lk.h} href={lk.h} className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${lk.a ? 'bg-blue-50 text-blue-700' : 'text-gray-500 hover:text-gray-800 hover:bg-gray-50'}`}>{lk.l}</Link>
-              ))}
-            </div>
-          </div>
-          <div className="flex items-center gap-3">
-            <span className="text-xs text-gray-500">{user.first_name} {user.last_name}</span>
-            <button onClick={logout} className="text-xs text-red-500 hover:text-red-700 font-medium">Logout</button>
-          </div>
-        </div>
-      </nav>
+      <Navbar />
 
       <main className="max-w-5xl mx-auto px-6 py-8">
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-8">

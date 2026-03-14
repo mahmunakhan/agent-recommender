@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import api, { Job, Application } from '@/lib/api';
+import Navbar from '@/components/Navbar';
 import NotificationBell from '@/components/NotificationBell';
 import Link from 'next/link';
 
@@ -104,18 +105,7 @@ export default function RecruiterDashboard() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <nav className="bg-white shadow-sm">
-        <div className="max-w-7xl mx-auto px-4 py-4 flex justify-between items-center">
-          <h1 className="text-2xl font-bold text-blue-600">Recruiter Portal</h1>
-          <div className="flex items-center gap-4">
-            <NotificationBell />
-            <span className="text-gray-600">Welcome, {user.first_name || user.email}</span>
-            <Link href="/dashboard" className="text-blue-600 hover:text-blue-800">
-              Main Dashboard
-            </Link>
-          </div>
-        </div>
-      </nav>
+      <Navbar />
 
       <div className="max-w-7xl mx-auto px-4 py-8">
         {/* ─── Stats Cards ─── */}
